@@ -8,6 +8,61 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.clients.jira import JiraClient, JiraError
+from app.jira_tickets import repository_candidates
+
+
+def test_repository_candidates_excludes_org_listing_links_and_detects_conflicts():
+    description = """Backend: https://github.com/RogersCommunications/customer-api
+    https://github.com/orgs/RogersCommunications/repositories
+    Frontend: RogersCommunications/DOAT-Client-UI
+    Other org: example/service"""
+    assert repository_candidates(description) == [
+        "RogersCommunications/customer-api",
+        "RogersCommunications/DOAT-Client-UI",
+    ]
+
+
+def test_repository_candidates_supports_jira_adf_and_git_suffix():
+    description = {"type": "doc", "content": [{"type": "paragraph", "content": [
+        {"type": "text", "text": "Repository: https://github.com/RogersCommunications/customer-api.git"}
+    ]}]}
+    assert repository_candidates(description) == ["RogersCommunications/customer-api"]
+
+
+def test_repository_candidates_uses_jira_adf_link_target():
+    description = {"type": "doc", "content": [{"type": "paragraph", "content": [{
+        "type": "text", "text": "Frontend repository", "marks": [{
+            "type": "link", "attrs": {"href": "https://github.com/RogersCommunications/client-ui/tree/main"}
+        }]
+    }]}]}
+    assert repository_candidates(description) == ["RogersCommunications/client-ui"]
+
+
+def test_assigned_jira_issues_jql_and_pagination():
+    def handler(request):
+        assert request.url.path == "/rest/api/2/search"
+        assert request.url.params["jql"] == "assignee = currentUser() AND resolution IS EMPTY ORDER BY updated DESC"
+        return httpx.Response(200, json={"startAt": 0, "total": 2, "issues": [{
+            "key": "TEST-12", "fields": {"summary": "Ticket", "description": "RogersCommunications/service",
+                                             "status": {"name": "Open"}, "issuetype": {"name": "Story"}}
+        }]})
+
+    client = JiraClient("https://jira.example.com", "", "test-token", auth_type="bearer", api_version="2")
+    transport = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    with patch("app.clients.jira.httpx.AsyncClient", return_value=transport):
+        response = asyncio.run(client.assigned_issues(page_size=250, start_at=0))
+    assert response["issues"][0]["repository_candidates"] == ["RogersCommunications/service"]
+    assert response["next_page"] == 1
+
+
+def test_assigned_jira_empty_page_terminates_pagination():
+    transport = httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda request: httpx.Response(200, json={"startAt": 100, "total": 101, "issues": []})
+    ))
+    client = JiraClient("https://jira.example.com", "", "test-token", auth_type="bearer", api_version="2")
+    with patch("app.clients.jira.httpx.AsyncClient", return_value=transport):
+        result = asyncio.run(client.assigned_issues(start_at=100))
+    assert result == {"issues": [], "next_page": None}
 
 
 @pytest.mark.parametrize("api_version,auth_type", [("2", "bearer"), ("3", "basic")])

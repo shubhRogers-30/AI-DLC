@@ -11,6 +11,15 @@ class Settings(BaseSettings):
 
     github_token: str = ""
     github_api_url: str = "https://api.github.com"
+    github_organization: str = "RogersCommunications"
+    github_app_id: str = ""
+    github_installation_id: str = ""
+    github_private_key_path: str = ""
+    api_token: str = ""
+    command_timeout_seconds: int = 1800
+    agent_timeout_seconds: int = 1800
+    ci_timeout_seconds: int = 1800
+    ci_poll_interval_seconds: int = 10
 
     jira_base_url: str = ""
     jira_email: str = ""
@@ -18,6 +27,7 @@ class Settings(BaseSettings):
     jira_project_key: str = "DEMO"
     jira_auth_type: Literal["basic", "bearer"] = "basic"
     jira_api_version: Literal["2", "3"] = "3"
+    jira_default_page_size: int = 50
 
     sonar_url: str = ""
     sonar_token: str = ""

@@ -5,7 +5,7 @@ Python + FastAPI + LangGraph + GitHub Copilot SDK + MCP + GitHub + Jira.
 Workflow:
 
 Jira Story -> requirements -> architecture -> HUMAN APPROVAL -> planning ->
-Spring Boot Copilot coding agent -> tests -> PR -> SonarQube/CodeQL ->
+Stack-aware Copilot coding agent -> verified tests -> PR -> SonarQube/CodeQL ->
 quality gate -> remediation loop -> final human approval.
 
 The implementation deliberately separates:
@@ -45,16 +45,20 @@ python -m venv .venv
 # Windows: .venv\Scripts\activate
 # Linux/macOS: source .venv/bin/activate
 pip install -r requirements.txt
-python -m copilot download-runtime
 ```
 
-Copy `.env.example` to `.env`.
+Copy `.env.example` to `.env`. Install/authenticate the GitHub Copilot CLI
+for the user running the backend; VS Code login alone is not sufficient.
+Verify `copilot --version`, then start `copilot` and use `/login` if needed.
+On Windows PowerShell, use `copilot.cmd --version` and `copilot.cmd` if the
+`.ps1` launcher is blocked; changing the machine execution policy is unnecessary.
+The SDK uses the logged-in CLI account, not the GitHub App installation token.
 
 ## Mock mode
 
 ```bash
 set MOCK_MODE=true
-uvicorn app.main:app --reload
+python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
 Create a workflow:
@@ -62,28 +66,186 @@ Create a workflow:
 ```bash
 curl -X POST http://localhost:8000/api/workflows ^
   -H "Content-Type: application/json" ^
-  -d "{\"jira_key\":\"DEMO-101\",\"repository\":\"acme/sample-springboot\",\"story\":\"Add customer eligibility endpoint\"}"
+  -d "{\"jira_key\":\"DEMO-101\",\"repository\":\"RogersCommunications/sample-springboot\",\"stack\":\"springboot\"}"
 ```
 
-The graph pauses at human approval. Resume:
+The response is HTTP 202 with a `run_id`. Poll
+`GET /api/workflows/<RUN_ID>` until `phase=awaiting_approval` and
+`pending_approval.type=architecture_approval`. Review the proposal, then resume:
 
 ```bash
 curl -X POST http://localhost:8000/api/workflows/<RUN_ID>/approval ^
   -H "Content-Type: application/json" ^
-  -d "{\"approved\":true,\"comment\":\"Architecture approved\"}"
+  -d "{\"approved\":true,\"approval_type\":\"architecture_approval\",\"comment\":\"Architecture approved\"}"
 ```
 
-## Real mode
+Poll again for `merge_approval`, inspect the PR/quality evidence, then send the
+same endpoint a decision with `approval_type=merge_approval`. Final success is
+`phase=completed`, `state.status=approved_for_merge`; no automatic merge occurs.
+Rejection terminates the run. Mock mode never edits, runs builds or calls CI.
+
+## Real-data testing with Postman
+
+Use a sandbox repository and a small real Jira story first. Run the service
+in an isolated environment: developer agents and build scripts execute code.
+Do not expose the API publicly or use production deployment credentials.
+
+### 1. Configure credentials
 
 Set:
 
 - `MOCK_MODE=false`
-- `GITHUB_TOKEN`
+- `API_TOKEN` to a strong local API bearer secret
+- `GITHUB_ORGANIZATION=RogersCommunications`
+- `GITHUB_TOKEN`, or all three `GITHUB_APP_ID`, `GITHUB_INSTALLATION_ID`,
+  `GITHUB_PRIVATE_KEY_PATH` for an organization-installed GitHub App
 - `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`
 - `SONAR_URL`, `SONAR_TOKEN`
 - `WORKSPACE_ROOT`
 
-Clone the target repository under `WORKSPACE_ROOT` or let the GitHub adapter clone it.
+GitHub permissions: Contents write, Pull requests write, Actions write, and
+Code scanning alerts read. With a classic PAT, equivalent access typically
+requires `repo`, `workflow`, and applicable code-scanning access. Authorize
+organization SSO as required. GitHub Apps can access only installed repositories;
+private-repository CodeQL also requires the appropriate organization entitlement.
+Keep App private keys outside repositories/workspaces. Git authentication is
+injected per clone/push operation; tokens are not embedded in clone URLs.
+
+### 2. Opt the repository in
+
+Submit `.github/ai-dlc.json` in a setup pull request targeting the target
+repository's default branch. You do not need direct write access to `main`; a
+repository maintainer can review and merge the opt-in pull request. The file on
+the default branch after merge must contain:
+
+```json
+{
+  "version": 1,
+  "enabled": true,
+  "targets": [{"name": "default", "path": ".", "stack": "angular"}],
+  "quality": {
+    "sonar_project_key": "actual-sonar-project-key",
+    "sonar_workflow": "sonar.yml",
+    "codeql_workflow": "codeql.yml"
+  }
+}
+```
+
+Use `springboot` for a Java backend. For a monorepo, use the actual frontend and
+backend directories as separate targets; see `config/repository.example.json`.
+Omit the target's stack for automatic detection. Ambiguous/unknown stacks fail
+closed, and a request cannot override a configured target with a different stack.
+Discovery covers accessible organization repositories without a central list;
+coding still requires per-repository opt-in and write access. Default branches
+come from GitHub metadata, not the global `DEFAULT_BRANCH` setting.
+
+### 3. Prepare tools and CI
+
+- Spring Boot: install the repository's JDK and Maven/Gradle. Wrappers are
+  preferred when present. Checks run Maven `verify` or Gradle `test build`.
+- Angular: use the repository's Node/npm versions and private package registry
+  authentication. The default profile requires a lockfile, `test:ci`, and
+  `build:prod` scripts. Installation uses `npm ci --engine-strict`, so unsupported
+  Node/npm versions fail instead of continuing with a warning. DOAT-Client-UI
+  currently declares Node >=20.19 and <21; Node 22 does not meet that contract.
+- Configure both named GitHub workflows with `workflow_dispatch` on the default
+  branch. They must check out and analyze the dispatched branch's exact commit.
+- CodeQL must analyze the target language: `java-kotlin` or
+  `javascript-typescript`. A successful job alone is insufficient: an analysis
+  for that SHA must exist, and any open CodeQL alert blocks approval.
+- The Sonar workflow must build/test and scan with the configured project key,
+  `sonar.branch.name` equal to `github.ref_name`, `sonar.scm.revision` equal to
+  `github.sha`, and `sonar.qualitygate.wait=true`. Store scan credentials in
+  GitHub Actions secrets. Branch analysis requires a compatible Sonar edition;
+  a main-branch-only Community setup is not sufficient for this workflow.
+
+### 4. Start one backend worker
+
+```powershell
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
+Do not use `--reload`, multiple workers, or restart between approvals: graph
+checkpoints, run state and background tasks are currently in memory. Environment
+variables override `.env`; remove stale `MOCK_MODE=true` terminal overrides.
+
+### 5. Import and run the Postman requests individually
+
+Import `postman/AI-DLC.postman_collection.json` and
+`postman/AI-DLC.postman_environment.json`. Select the environment and replace
+`api_token`, `repository`, `jira_key`, `target`, `stack`, and `approver`.
+The API bearer token must match `API_TOKEN`. Do not share populated environments.
+
+1. Health: verify `mock_mode=false`; this does not check upstream connectivity.
+2. Supported stacks: inspect the registered profiles and build commands.
+3. Repository discovery: verify your sandbox appears under RogersCommunications.
+4. Targets: verify `enabled=true`, target path/stack, branch and quality settings.
+5. Jira lookup: verify actual summary, description and acceptance criteria.
+6. Start workflow: HTTP 202 saves `run_id` automatically in the environment.
+   Initial cloning happens before this response; coding/CI execute in background.
+7. Poll until `awaiting_approval` / `architecture_approval`; review the proposal.
+8. Send architecture approval. Only now can coding, tests and publication proceed.
+9. Poll through development/CI. Inspect `state.test_result.checks`, `commit_sha`,
+   `pr_url`, and quality results. Wait for `merge_approval`, then review GitHub.
+10. Send final approval with `approval_type=merge_approval`.
+11. Poll for `completed` / `approved_for_merge`, then merge manually under normal
+    branch protections. A changed branch SHA prevents stale final approval.
+
+Do not use Run Collection: approvals require review. A wrong-stage, duplicate,
+or premature approval returns 409. On `phase=failed`, inspect `state.errors`,
+command output and linked CI runs; correct the underlying issue and start a new
+run. Remediation is bounded and updates the existing PR rather than opening more.
+Repeat with `approved=false` on a separate run: it must stop before development.
+Also test a failing build/security baseline in a sandbox: it must not get merge
+approval. For stories spanning two repositories, use one run per repository with
+the same Jira key and agree the API contract before frontend implementation.
+
+## Workflow Console
+
+The separate Angular 20 console is in `frontend/`; it does not modify the
+existing `workspaces/DOAT-Client-UI` application. It lists unresolved Jira
+issues assigned to the Jira account configured on the backend, extracts
+RogersCommunications repository links (including Jira Cloud rich-text links),
+and requires an explicit repository/target choice if multiple candidates exist.
+When no repository is mentioned, select one from the accessible organization
+repositories. Only repositories opted in on their default branch can start.
+
+Start the backend as described above, then run this in a second terminal:
+
+```powershell
+Set-Location frontend
+npm ci
+npm start
+```
+
+Open `http://127.0.0.1:4200/`. Use the generated local Postman environment's
+API token in the console connection form. The token is kept in this browser's
+session storage and sent only in the API Authorization header. The development
+proxy forwards `/api` and `/health` to the backend, avoiding local browser CORS.
+
+The console polls workflow state, custom stage events, and sanitized working
+diffs. Its approval sequence is architecture, tested-code/pre-push review, and
+final PR review. A remediation cycle returns to the code-review approval before
+republishing. Final approval does not merge; merge remains a manual GitHub
+action. UI visibility follows completed agent operations and 1.6-second diff
+snapshots; it does not expose Copilot's private token-by-token reasoning.
+
+Before starting, enter a new branch name and choose its base branch. The default
+name is ticket-key plus a unique suffix. If the name already exists, the console
+shows its recent commits and matching open pull requests. Explicitly confirm
+reuse to continue on it; otherwise choose another name. Reusing a branch can
+combine this Jira story with existing branch work, and an existing matching PR
+will be updated rather than duplicated. New remote branches are created when
+the workflow starts; agent code is pushed only after the pre-push approval.
+
+### Extending stacks
+
+Add a server-controlled JSON profile under `stacks/`, following the existing
+profiles: guidance, CodeQL language, detection rules and command arrays. Restart
+the backend, then reference the profile name in a target. No graph edit is
+required. Commands are never accepted from API requests or repository config.
+Existing matching agent instructions are loaded from `.github/agents`; otherwise
+the profile's stack guidance and role instructions drive the SDK session.
 
 ### Jira connection
 
@@ -96,9 +258,9 @@ personal access token; `JIRA_EMAIL` is not used in Bearer mode. Set
 `JIRA_BASE_URL` to the Jira installation URL, including a context path such
 as `/jira` if required. Restart the app after changing `.env`.
 
-To retrieve a ticket without starting a coding workflow, open `/docs`, select
-`GET /api/jira/issues/{issue_key}`, and enter a full ticket key such as
-`PROJECT-123`. The response contains the key, summary and description.
+To retrieve a ticket without starting a coding workflow, use Postman with
+`GET /api/jira/issues/{issue_key}` and the API bearer header. Enter a full ticket
+key such as `PROJECT-123`. The response contains the key, summary and description.
 The same Jira client loads the `jira_key` submitted to `POST /api/workflows`
 and serves the MCP `jira_get_story` tool. Connection and permission failures
 return a descriptive error instead of an unhandled server exception.
@@ -111,4 +273,4 @@ return a descriptive error instead of an unhandled server exception.
 - Never grant the orchestration service merge-to-protected-branch or production-deploy permissions.
 - Use GitHub Actions as the authoritative build/test/security gate.
 - Persist agent/version/tool/audit information.
-- Use stable Copilot `session_id` values for resumability.
+- Persist Copilot session IDs for controlled resumability.

@@ -1,0 +1,16 @@
+{
+  "name": "springboot",
+  "display_name": "Spring Boot / Java",
+  "guidance": "Follow the existing Java/Spring Boot controller, service and persistence conventions. Use the repository's Java version, Maven/Gradle dependencies and test framework. Add unit and web-layer tests. Do not upgrade frameworks or change unrelated code.",
+  "codeql_language": "java-kotlin",
+  "detection": [
+    {"contains": {"pom.xml": "org.springframework.boot"}},
+    {"contains": {"build.gradle": "org.springframework.boot"}},
+    {"contains": {"build.gradle.kts": "org.springframework.boot"}}
+  ],
+  "commands": {
+    "pom.xml": [["mvn", "-B", "verify"]],
+    "build.gradle": [["gradle", "test", "build"]],
+    "build.gradle.kts": [["gradle", "test", "build"]]
+  }
+}

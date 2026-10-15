@@ -11,6 +11,11 @@ class AIDLCState(TypedDict, total=False):
     tasks: list[dict[str, Any]]
     branch: str
     workspace: str
+    repository_workspace: str
+    stack: str
+    target: str
+    repo_config: dict[str, Any]
+    commit_sha: str
     pr_number: int
     pr_url: str
     test_result: dict[str, Any]

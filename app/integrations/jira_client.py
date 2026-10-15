@@ -1,6 +1,7 @@
 import base64
 from urllib.parse import quote
 import httpx
+from app.jira_tickets import normalize_issue
 
 class JiraError(RuntimeError):
     def __init__(self, message, status_code=502):
@@ -78,6 +79,35 @@ class JiraClient:
             "description": fields.get("description") or "",
             "acceptance_criteria": []
         }
+
+    async def assigned_issues(self, organization="RogersCommunications", page_size=50, start_at=0):
+        if self.mock:
+            return {"issues": [normalize_issue({
+                "key": "DEMO-101",
+                "fields": {
+                    "summary": "Improve account details panel",
+                    "description": "Update the account panel in https://github.com/RogersCommunications/DOAT-Client-UI",
+                    "status": {"name": "In Progress"},
+                    "issuetype": {"name": "Story"},
+                    "updated": "2026-10-13T10:00:00.000+0000",
+                    "project": {"key": "DEMO"},
+                },
+            }, organization)], "next_page": None}
+        start_at = max(0, start_at)
+        result = await self._request("GET", "search", params={
+            "jql": "assignee = currentUser() AND resolution IS EMPTY ORDER BY updated DESC",
+            "startAt": start_at,
+            "maxResults": min(max(page_size, 1), 100),
+            "fields": "summary,description,status,issuetype,updated,project",
+        })
+        raw_issues = result.get("issues")
+        if not isinstance(raw_issues, list):
+            raise JiraError("Jira returned an unexpected assigned-issues response.")
+        issues = [normalize_issue(issue, organization) for issue in raw_issues]
+        next_page = result.get("startAt", start_at) + len(raw_issues)
+        if not raw_issues or next_page >= result.get("total", next_page):
+            next_page = None
+        return {"issues": issues, "next_page": next_page}
 
     async def add_comment(self, key, body):
         if self.mock:

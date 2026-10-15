@@ -1,0 +1,83 @@
+{
+  "info": {
+    "name": "AI-DLC Organization Workflows - Manual Approvals",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Send requests individually, not with Run Collection: architecture and merge require human review. REAL SETUP: (1) Use a sandbox RogersCommunications repository and a real Jira ticket. (2) Install Python requirements, Git, authenticated Copilot CLI, the repository's JDK/Maven/Gradle or Node/npm, and any private npm registry credentials. Copilot must be logged in separately from the GitHub API credentials. (3) Configure MOCK_MODE=false, GITHUB_ORGANIZATION=RogersCommunications, API_TOKEN, JIRA_BASE_URL/JIRA_EMAIL/JIRA_API_TOKEN, JIRA_AUTH_TYPE/JIRA_API_VERSION, SONAR_URL/SONAR_TOKEN. Use GITHUB_TOKEN for initial testing, or GITHUB_APP_ID/GITHUB_INSTALLATION_ID/GITHUB_PRIVATE_KEY_PATH for an organization-installed GitHub App. Never put GitHub/Jira/Sonar credentials into this collection. (4) Grant Contents and Pull Requests write, Actions write and Code scanning alerts read; authorize organizational SSO where required. Private CodeQL repositories require the organization's code-scanning entitlement. (5) On the target default branch, commit .github/ai-dlc.json based on config/repository.example.json. For a single repository target use name=default, path=., stack=angular or springboot. For a monorepo list actual target paths. Set enabled=true, actual sonar_project_key, sonar_workflow and codeql_workflow filenames. This is a per-repository opt-in, not a central list of org repositories. (6) Both named GitHub workflows must be active on the default branch, allow workflow_dispatch, check out the dispatched branch/commit, and finish with nonzero exit on failure. CodeQL must analyze the applicable Java/Kotlin or JavaScript/TypeScript languages. The Sonar workflow must build/test and scan the repository with the configured sonar.projectKey, sonar.branch.name matching github.ref_name, sonar.scm.revision matching github.sha, and sonar.qualitygate.wait=true. Branch analysis requires a Sonar edition supporting it. Configure scanner credentials as GitHub Actions secrets, not repository files. For Angular, this profile requires a lockfile, test:ci and build:prod scripts. (7) Start one worker with python -m uvicorn app.main:app --host 127.0.0.1 --port 8000, without --reload. Do not restart during a run: state/tasks are currently in memory. Bind locally; use an isolated runner because agent and repository build code can execute commands. (8) Import this collection and the example environment; select the environment, set base_url, api_token, repository, jira_key, target and stack. (9) Send requests in numbered order, repeating Poll while phase=running. On phase=failed inspect state.errors and test/quality results, fix the underlying setup, and start a new run. Rejected or completed runs cannot be resumed. Final approval records approval only; merge manually using normal branch protections. (10) Test rejection on a separate run by changing approved to false. Test a failing build/quality baseline in a sandbox: it must not receive merge approval. For a story spanning separate frontend/backend repositories, start one run for each repository with the same jira_key and coordinate the API contract. For future stacks add a validated server-side stacks/*.json profile; define detection rules, trusted command arrays, guidance and CodeQL language. No graph edit is required."
+  },
+  "auth": {"type": "bearer", "bearer": [{"key": "token", "value": "{{api_token}}", "type": "string"}]},
+  "item": [
+    {
+      "name": "1 Health - confirm real mode",
+      "request": {"method": "GET", "url": "{{base_url}}/health", "description": "Expect status=ok and mock_mode=false for live testing. Health does not check upstream integrations."}
+    },
+    {
+      "name": "2 Supported stacks",
+      "request": {"method": "GET", "url": "{{base_url}}/api/stacks", "description": "Lists server-side profiles and approved commands. Current Angular checks are npm ci --engine-strict, npm run test:ci, npm run build:prod; Spring Boot uses Maven verify or Gradle test/build, preferring wrappers. Install Node/npm versions matching the repository engines before starting a real run."}
+    },
+    {
+      "name": "3 Discover organization repositories",
+      "request": {"method": "GET", "url": "{{base_url}}/api/repositories", "description": "Lists accessible non-archived RogersCommunications repositories, following GitHub pagination. Discovery does not automatically opt repositories into coding."}
+    },
+    {
+      "name": "4 Inspect repository targets",
+      "request": {"method": "GET", "url": "{{base_url}}/api/repositories/{{repository}}/targets", "description": "Confirm enabled=true, actual default_branch, target name/path/stack and quality workflow/project settings. Without .github/ai-dlc.json live coding is disabled. Write access is required."}
+    },
+    {
+      "name": "5 Retrieve real Jira story",
+      "request": {"method": "GET", "url": "{{base_url}}/api/jira/issues/{{jira_key}}", "description": "Verify actual Jira key, summary, description and acceptance criteria before requesting any coding. Fix 404/502/503 errors before continuing."}
+    },
+    {
+      "name": "6 Start workflow",
+      "request": {
+        "method": "POST", "url": "{{base_url}}/api/workflows",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "body": {"mode": "raw", "raw": "{\n  \"jira_key\": \"{{jira_key}}\",\n  \"repository\": \"{{repository}}\",\n  \"target\": \"{{target}}\",\n  \"stack\": \"{{stack}}\"\n}", "options": {"raw": {"language": "json"}}},
+        "description": "Clones into a run-isolated workspace and creates a local working branch; returns HTTP 202 with run_id. Jira and architecture execute in the background. The optional stack must agree with the target; omit stack for profile auto-detection. The post-response script stores run_id in your selected environment."
+      },
+      "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["pm.test('Workflow accepted', () => pm.response.to.have.status(202));", "if (pm.response.code === 202) pm.environment.set('run_id', pm.response.json().run_id);"]}}]
+    },
+    {
+      "name": "7 Poll architecture checkpoint",
+      "request": {"method": "GET", "url": "{{base_url}}/api/workflows/{{run_id}}", "description": "Repeat while phase=running. Wait for phase=awaiting_approval and pending_approval.type=architecture_approval. Read state.requirements and state.architecture.proposal. Do not approve an incorrect or incomplete design. phase=failed exposes a safe error summary in state.errors."}
+    },
+    {
+      "name": "8 Approve architecture",
+      "request": {
+        "method": "POST", "url": "{{base_url}}/api/workflows/{{run_id}}/approval",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "body": {"mode": "raw", "raw": "{\n  \"approved\": true,\n  \"approval_type\": \"architecture_approval\",\n  \"comment\": \"Reviewed architecture and acceptance criteria\",\n  \"approver\": \"{{approver}}\"\n}", "options": {"raw": {"language": "json"}}},
+        "description": "Send only after reviewing the architecture. HTTP 202 resumes coding and tests; the backend owns commit/push and PR creation. Set approved=false to reject and terminate. HTTP 409 means no matching approval checkpoint or a concurrent approval was already accepted."
+      }
+    },
+    {
+      "name": "9 Poll tested code for pre-push review",
+      "request": {"method": "GET", "url": "{{base_url}}/api/workflows/{{run_id}}", "description": "Repeat while phase=running. Inspect local build/test exit codes and use GET /api/workflows/{{run_id}}/diff to review the actual unpushed patch. Wait for phase=awaiting_approval and pending_approval.type=code_approval. Rejecting here stops before branch push and PR creation."}
+    },
+    {
+      "name": "10 Approve tested code for push",
+      "request": {
+        "method": "POST", "url": "{{base_url}}/api/workflows/{{run_id}}/approval",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "body": {"mode": "raw", "raw": "{\n  \"approved\": true,\n  \"approval_type\": \"code_approval\",\n  \"comment\": \"Reviewed the tested local diff; authorize push and PR creation\",\n  \"approver\": \"{{approver}}\"\n}", "options": {"raw": {"language": "json"}}},
+        "description": "Send only after reviewing the pre-push code diff and tests. The backend pushes the ticket branch and creates or updates its pull request. Rejection prevents publication."
+      }
+    },
+    {
+      "name": "11 Poll CI and review PR",
+      "request": {"method": "GET", "url": "{{base_url}}/api/workflows/{{run_id}}", "description": "Repeat while phase=running. Inspect state.pr_url, commit_sha, CodeQL alerts and Sonar findings. CI is triggered only after the approved branch is pushed, and results must match that commit. Wait for phase=awaiting_approval and pending_approval.type=merge_approval; inspect the actual PR diff and CI logs in GitHub."}
+    },
+    {
+      "name": "12 Record final merge approval",
+      "request": {
+        "method": "POST", "url": "{{base_url}}/api/workflows/{{run_id}}/approval",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "body": {"mode": "raw", "raw": "{\n  \"approved\": true,\n  \"approval_type\": \"merge_approval\",\n  \"comment\": \"Reviewed PR diff and verified CI for the recorded commit\",\n  \"approver\": \"{{approver}}\"\n}", "options": {"raw": {"language": "json"}}},
+        "description": "Send only after checking the PR diff and tests/security evidence. The backend verifies the branch still points at the verified commit. This records approval; it does not merge or deploy."
+      }
+    },
+    {
+      "name": "13 Confirm completion",
+      "request": {"method": "GET", "url": "{{base_url}}/api/workflows/{{run_id}}", "description": "Expect phase=completed and state.status=approved_for_merge. If rejected, state.status=rejected and no further development occurs. If failed, inspect state.errors and CI/build logs. Merge manually with normal organization controls; approvals have no role-based identity enforcement yet."}
+    }
+  ]
+}

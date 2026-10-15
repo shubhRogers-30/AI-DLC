@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "enabled": true,
+  "targets": [
+    {"name": "backend", "path": "backend", "stack": "springboot"},
+    {"name": "frontend", "path": "frontend", "stack": "angular"}
+  ],
+  "quality": {
+    "sonar_project_key": "REPLACE_WITH_ACTUAL_PROJECT_KEY",
+    "sonar_workflow": "sonar.yml",
+    "codeql_workflow": "codeql.yml"
+  }
+}

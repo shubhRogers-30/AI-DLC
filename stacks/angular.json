@@ -1,0 +1,10 @@
+{
+  "name": "angular",
+  "display_name": "Angular / TypeScript",
+  "guidance": "Follow the existing Angular version, module/standalone patterns, shared components, RxJS usage and SCSS conventions. Keep HTTP access in services. Use the existing test framework and add component/service tests. Do not add UI libraries or upgrade frameworks. Respect package.json engines and use configured production environment values.",
+  "codeql_language": "javascript-typescript",
+  "detection": [{"files": ["angular.json", "package.json"], "dependencies": ["@angular/core"]}],
+  "commands": {
+    "default": [["npm", "ci", "--engine-strict"], ["npm", "run", "test:ci"], ["npm", "run", "build:prod"]]
+  }
+}
