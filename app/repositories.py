@@ -1,4 +1,5 @@
 from pathlib import Path, PurePosixPath
+import json
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -40,6 +41,7 @@ class RepositoryConfig(BaseModel):
     enabled: bool = False
     targets: list[Target] = Field(default_factory=lambda: [Target(name="default")], min_length=1)
     quality: QualityConfig | None = None
+    setup_blockers: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def unique_targets(self):
@@ -47,6 +49,10 @@ class RepositoryConfig(BaseModel):
         if len(names) != len(set(names)):
             raise ValueError("Target names must be unique")
         return self
+
+    @property
+    def workflow_ready(self):
+        return self.enabled and self.quality is not None and not self.setup_blockers
 
 
 def select_target(config, name=None, stack=None):
@@ -68,3 +74,24 @@ def resolve_workspace(root, target):
     if not workspace.is_relative_to(root) or not workspace.is_dir():
         raise ValueError("Target directory does not exist or escapes the repository")
     return str(workspace)
+
+
+class RepositoryRegistry:
+    def __init__(self, path=None):
+        self.path = Path(path) if path else Path(__file__).resolve().parents[1] / "config" / "repositories.json"
+        data = json.loads(self.path.read_text(encoding="utf-8"))
+        self.organization = data["organization"]
+        self.repositories = {
+            name.casefold(): RepositoryConfig.model_validate(config)
+            for name, config in data.get("repositories", {}).items()
+        }
+
+    def get(self, repository):
+        return self.repositories.get(repository.casefold(), RepositoryConfig())
+
+    def is_approved(self, repository):
+        config = self.repositories.get(repository.casefold())
+        return bool(config and config.enabled)
+
+
+repository_registry = RepositoryRegistry()

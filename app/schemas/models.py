@@ -15,4 +15,3 @@ class WorkflowRequest(BaseModel):
     target: str | None = None
     branch_name: str | None = Field(default=None, min_length=1, max_length=240)
     base_branch: str | None = Field(default=None, min_length=1, max_length=240)
-    reuse_existing_branch: bool = False

@@ -2,6 +2,7 @@ import asyncio
 import base64
 import os
 import re
+import secrets
 import time
 from pathlib import Path
 from urllib.parse import quote
@@ -103,6 +104,27 @@ class GitHubClient:
                                     for pull in pulls],
         }
 
+    async def available_branch_name(self, repo, requested, base, max_attempts=20):
+        self.validate_repository(repo)
+        self.validate_branch_name(requested)
+        self.validate_branch_name(base)
+        seen = set()
+        for collision_count in range(max_attempts):
+            if collision_count == 0:
+                candidate = requested
+            else:
+                suffix = f"{secrets.randbelow(1_000_000):06d}"
+                candidate = f"{requested}_{suffix}"
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            summary = ({"exists": True, "name": candidate, "base_branch": base}
+                       if candidate == base else await self.branch_summary(repo, candidate, base))
+            if not summary["exists"]:
+                return {"requested_branch": requested, "branch_name": candidate,
+                        "collision_count": collision_count, "summary": summary}
+        raise GitHubError("Could not find an unused branch name after 20 attempts", 409)
+
     async def access_token(self):
         if not self.app_id:
             if not self.token:
@@ -146,7 +168,8 @@ class GitHubClient:
     async def list_repositories(self):
         if self.mock:
             return [{"full_name": f"{self.organization}/sample-springboot", "default_branch": "main"},
-                    {"full_name": f"{self.organization}/DOAT-Client-UI", "default_branch": "main"}]
+                    {"full_name": f"{self.organization}/DOAT-Client-UI", "default_branch": "main"},
+                    {"full_name": f"{self.organization}/msst-ui", "default_branch": "main"}]
         repositories = []
         page = 1
         while True:
@@ -176,19 +199,6 @@ class GitHubClient:
         if not can_push:
             raise GitHubError("GitHub credentials require write access to this repository", 403)
         return metadata
-
-    async def repository_config(self, repo, ref):
-        if self.mock:
-            return None
-        content = await self._request("GET", f"/repos/{repo}/contents/.github/ai-dlc.json",
-                                      allow_missing=True, params={"ref": ref})
-        if content is None:
-            return None
-        import json
-        try:
-            return json.loads(base64.b64decode(content["content"]).decode("utf-8"))
-        except (KeyError, ValueError, UnicodeError) as error:
-            raise GitHubError("Invalid .github/ai-dlc.json on the default branch", 422) from error
 
     async def create_branch(self, repo, branch, base):
         self.validate_branch_name(branch)
@@ -278,24 +288,19 @@ class GitHubClient:
             raise GitHubError("Git operation failed; check credentials, repository state and Git installation")
         return result["output"].strip()
 
-    async def prepare_workspace(self, repo, workspace_root, run_id, branch, base, reuse_existing=False):
+    async def prepare_workspace(self, repo, workspace_root, run_id, requested_branch, base):
         self.validate_repository(repo)
-        self.validate_branch_name(branch)
         self.validate_branch_name(base)
-        summary = await self.branch_summary(repo, branch, base)
-        if summary["exists"] and not reuse_existing:
-            raise GitHubError("Branch already exists; confirm reuse or choose another branch name", 409)
-        if not summary["exists"] and reuse_existing:
-            raise GitHubError("The selected branch no longer exists; check the name and try again", 409)
-        if not summary["exists"]:
-            await self.create_branch(repo, branch, base)
+        selection = await self.available_branch_name(repo, requested_branch, base)
+        branch = selection["branch_name"]
+        await self.create_branch(repo, branch, base)
         target = Path(workspace_root).resolve() / run_id / repo.split("/", 1)[1]
         target.parent.mkdir(parents=True, exist_ok=True)
         await self._git(["clone", "--branch", branch, "--single-branch", f"https://github.com/{repo}.git", str(target)],
                         target.parent, authenticated=True)
         await self._git(["config", "user.name", "AI-DLC"], target)
         await self._git(["config", "user.email", "ai-dlc@users.noreply.github.com"], target)
-        return str(target), summary
+        return str(target), branch, selection
 
     async def local_sha(self, workspace):
         return await self._git(["rev-parse", "HEAD"], workspace)

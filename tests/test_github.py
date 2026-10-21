@@ -34,29 +34,40 @@ def test_branch_summary_shows_mock_collision_and_base_options():
     assert not branch["open_pull_requests"]
 
 
-def test_workspace_creates_remote_branch_before_clone_and_reuses_on_confirmation(tmp_path):
+def test_workspace_chooses_numeric_suffix_and_creates_branch_before_clone(tmp_path):
     async def scenario():
         client = GitHubClient("token", "https://api.github.com")
         client.branch_summary = AsyncMock(side_effect=[
-            {"exists": False, "name": "feature/story", "base_branch": "main"},
-            {"exists": True, "name": "feature/story", "base_branch": "main"},
+            {"exists": True, "name": "feature/TEST-123", "base_branch": "main"},
+            {"exists": False, "name": "feature/TEST-123_483921", "base_branch": "main"},
         ])
         client.create_branch = AsyncMock()
         client._git = AsyncMock(return_value="")
-        first, new_summary = await client.prepare_workspace(
-            "RogersCommunications/demo", str(tmp_path), "new-run", "feature/story", "main",
-        )
-        client.create_branch.assert_awaited_once_with("RogersCommunications/demo", "feature/story", "main")
-        assert Path(first).name == "demo"
-        assert not new_summary["exists"]
-        assert client._git.call_args_list[0].args[0][1:4] == ["--branch", "feature/story", "--single-branch"]
-        client.create_branch.reset_mock()
-        second, reused_summary = await client.prepare_workspace(
-            "RogersCommunications/demo", str(tmp_path), "reuse-run", "feature/story", "main", True,
-        )
-        client.create_branch.assert_not_awaited()
-        assert Path(second).parent.name == "reuse-run"
-        assert reused_summary["exists"]
+        with patch("app.integrations.github_client.secrets.randbelow", return_value=483921):
+            workspace, branch, selection = await client.prepare_workspace(
+                "RogersCommunications/demo", str(tmp_path), "new-run", "feature/TEST-123", "main",
+            )
+        assert branch == "feature/TEST-123_483921"
+        assert selection["collision_count"] == 1
+        client.create_branch.assert_awaited_once_with("RogersCommunications/demo", branch, "main")
+        assert Path(workspace).name == "demo"
+        assert client._git.call_args_list[0].args[0][1:4] == ["--branch", branch, "--single-branch"]
+    asyncio.run(scenario())
+
+
+def test_available_branch_rechecks_suffix_collisions():
+    async def scenario():
+        client = GitHubClient("token", "https://api.github.com")
+        client.branch_summary = AsyncMock(side_effect=[
+            {"exists": True}, {"exists": True}, {"exists": False},
+        ])
+        with patch("app.integrations.github_client.secrets.randbelow", side_effect=[483921, 93742]):
+            result = await client.available_branch_name(
+                "RogersCommunications/demo", "feature/TEST-123", "main",
+            )
+        assert result["branch_name"] == "feature/TEST-123_093742"
+        assert result["collision_count"] == 2
+        assert client.branch_summary.await_count == 3
     asyncio.run(scenario())
 
 

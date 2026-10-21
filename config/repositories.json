@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "organization": "RogersCommunications",
+  "repositories": {
+    "RogersCommunications/DOAT-Client-UI": {
+      "enabled": true,
+      "targets": [
+        {"name": "default", "path": ".", "stack": "angular"}
+      ],
+      "quality": null,
+      "setup_blockers": [
+        "Confirm the SonarQube project key with the repository or SonarQube owner.",
+        "pipeline.yml does not declare workflow_dispatch, so the AI-DLC quality stage cannot dispatch it.",
+        "The local repository copy has no CodeQL workflow; add and enable an appropriate JavaScript/TypeScript CodeQL workflow."
+      ]
+    },
+    "RogersCommunications/msst-ui": {
+      "enabled": true,
+      "targets": [
+        {"name": "default", "path": ".", "stack": "angular"}
+      ],
+      "quality": null,
+      "setup_blockers": [
+        "Stack is auto-detected from the repository; confirm the detected framework before starting a run.",
+        "Confirm the SonarQube project key and workflow filename with the repository or SonarQube owner.",
+        "Confirm a dispatchable CodeQL workflow and its language before enabling quality runs."
+      ]
+    }
+  }
+}

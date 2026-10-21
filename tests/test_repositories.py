@@ -1,6 +1,6 @@
 import pytest
 
-from app.repositories import RepositoryConfig, Target, resolve_workspace, select_target
+from app.repositories import RepositoryConfig, RepositoryRegistry, Target, resolve_workspace, select_target
 
 
 @pytest.mark.parametrize("path", ["../outside", "/absolute", "C:/outside", "backend\\..\\outside"])
@@ -23,3 +23,16 @@ def test_target_resolution(tmp_path):
     assert resolve_workspace(tmp_path, Target(name="frontend", path="frontend")) == str(tmp_path / "frontend")
     with pytest.raises(ValueError):
         resolve_workspace(tmp_path, Target(name="missing", path="missing"))
+
+
+def test_central_registry_approves_requested_repositories_and_reports_quality_gaps():
+    registry = RepositoryRegistry()
+    doat = registry.get("RogersCommunications/DOAT-Client-UI")
+    msst = registry.get("RogersCommunications/msst-ui")
+    assert registry.is_approved("RogersCommunications/DOAT-Client-UI")
+    assert registry.is_approved("RogersCommunications/msst-ui")
+    assert doat.targets[0].stack == "angular"
+    assert msst.targets[0].stack is None
+    assert doat.quality is None and doat.setup_blockers
+    assert msst.quality is None and msst.setup_blockers
+    assert not registry.is_approved("RogersCommunications/unregistered")

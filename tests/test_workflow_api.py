@@ -61,6 +61,28 @@ def test_outside_org_and_discovery(monkeypatch):
         assert client.get("/api/repositories/RogersCommunications/DOAT-Client-UI/targets").json()["targets"][0]["stack"] == "angular"
 
 
+def test_central_registry_approves_apps_but_reports_ci_blockers(monkeypatch):
+    monkeypatch.setattr(settings, "mock_mode", False)
+    monkeypatch.setattr(settings, "api_token", "registry-test-token")
+    headers = {"Authorization": "Bearer registry-test-token"}
+    with TestClient(app) as client:
+        repositories = client.get("/api/repositories", headers=headers).json()["repositories"]
+        by_name = {repository["full_name"]: repository for repository in repositories}
+        assert by_name["RogersCommunications/DOAT-Client-UI"]["ai_dlc_approved"]
+        assert not by_name["RogersCommunications/DOAT-Client-UI"]["workflow_ready"]
+        assert by_name["RogersCommunications/msst-ui"]["ai_dlc_approved"]
+        assert not by_name["RogersCommunications/msst-ui"]["workflow_ready"]
+        targets = client.get("/api/repositories/RogersCommunications/DOAT-Client-UI/targets", headers=headers).json()
+        assert targets["approved"]
+        assert targets["setup_blockers"]
+        response = client.post("/api/workflows", headers=headers, json={
+            "jira_key": "TEST-123", "repository": "RogersCommunications/DOAT-Client-UI",
+            "target": "default", "stack": "angular",
+        })
+        assert response.status_code == 422
+        assert response.json()["detail"]["setup_blockers"]
+
+
 def test_assigned_issues_endpoint_uses_backend_jira_identity(monkeypatch):
     monkeypatch.setattr(settings, "mock_mode", True)
     monkeypatch.setattr(settings, "api_token", "")
@@ -82,26 +104,23 @@ def test_workflow_rejects_repository_conflicting_with_description(monkeypatch):
     assert response.json()["detail"]["repository_candidates"] == ["RogersCommunications/api-service"]
 
 
-def test_existing_branch_requires_explicit_reuse_confirmation(monkeypatch):
+def test_existing_branch_is_renamed_with_numeric_suffix(monkeypatch):
     monkeypatch.setattr(settings, "mock_mode", True)
     monkeypatch.setattr(settings, "api_token", "")
-    with TestClient(app) as client:
-        body = {"jira_key": "TEST-123", "repository": "RogersCommunications/demo", "target": "default",
-            "stack": "angular", "branch_name": "main", "base_branch": "develop"}
-        conflict = client.post("/api/workflows", json=body)
-        assert conflict.status_code == 409
-        assert conflict.json()["detail"]["code"] == "branch_exists"
-        assert conflict.json()["detail"]["branch"]["exists"] is True
-        body["reuse_existing_branch"] = True
-        protected = client.post("/api/workflows", json=body)
-        assert protected.status_code == 409
-        assert protected.json()["detail"]["code"] == "branch_protected"
-        body.update(branch_name="develop", base_branch="main")
-        accepted = client.post("/api/workflows", json=body)
+    collision = {"exists": True, "name": "feature/TEST-123", "base_branch": "main"}
+    available = {"exists": False, "name": "feature/TEST-123_483921", "base_branch": "main"}
+    with TestClient(app) as client, patch("app.main.github.branch_summary", new=AsyncMock(side_effect=[collision, available])):
+        with patch("app.integrations.github_client.secrets.randbelow", return_value=483921):
+            accepted = client.post("/api/workflows", json={
+                "jira_key": "TEST-123", "repository": "RogersCommunications/demo", "target": "default",
+                "stack": "angular", "branch_name": "feature/TEST-123", "base_branch": "main",
+            })
         assert accepted.status_code == 202
         run_id = accepted.json()["run_id"]
-        assert accepted.json()["state"]["branch"] == "develop"
-        assert asyncio.run(store.get(run_id))["events"][0]["status"] == "branch_reused"
+        assert accepted.json()["state"]["branch"] == "feature/TEST-123_483921"
+        event = asyncio.run(store.get(run_id))["events"][0]
+        assert event["status"] == "branch_created"
+        assert event["collision_count"] == 1
 
 
 def test_worker_failure_is_saved(monkeypatch):

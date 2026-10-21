@@ -20,7 +20,7 @@ from app.execution import run_command
 from pathlib import Path
 import asyncio
 from datetime import datetime, timezone
-from app.repositories import RepositoryConfig, Target, select_target, resolve_workspace
+from app.repositories import RepositoryConfig, Target, select_target, resolve_workspace, repository_registry
 from app.stacks import stacks
 from app.jira_tickets import repository_candidates
 
@@ -136,18 +136,28 @@ async def list_stacks():
 
 @app.get("/api/repositories")
 async def list_repositories():
-    return {"organization": settings.github_organization, "repositories": await github.list_repositories()}
+    repositories = await github.list_repositories()
+    for repository in repositories:
+        config = repository_registry.get(repository["full_name"])
+        repository.update({"ai_dlc_approved": repository_registry.is_approved(repository["full_name"]),
+                           "workflow_ready": config.workflow_ready,
+                           "setup_blockers": config.setup_blockers})
+    return {"organization": settings.github_organization, "repositories": repositories}
 
 
 async def repository_configuration(repo):
     metadata = await github.repository(repo)
-    raw = await github.repository_config(repo, metadata["default_branch"])
     if settings.mock_mode:
-        profile = "angular" if repo.lower().endswith("ui") else "springboot"
-        config = RepositoryConfig(enabled=True, targets=[Target(name="default", stack=profile)],
-                                  quality={"sonar_project_key": "mock", "sonar_workflow": "sonar.yml", "codeql_workflow": "codeql.yml"})
+        config = repository_registry.get(metadata["full_name"])
+        if not repository_registry.is_approved(metadata["full_name"]):
+            profile = "angular" if repo.lower().endswith("ui") else "springboot"
+            config = RepositoryConfig(enabled=True, targets=[Target(name="default", stack=profile)])
+        config = config.model_copy(update={
+            "quality": {"sonar_project_key": "mock", "sonar_workflow": "sonar.yml", "codeql_workflow": "codeql.yml"},
+            "setup_blockers": [],
+        })
     else:
-        config = RepositoryConfig.model_validate(raw or {})
+        config = repository_registry.get(metadata["full_name"])
     return metadata, config
 
 
@@ -155,7 +165,7 @@ async def repository_configuration(repo):
 async def repository_targets(owner: str, name: str):
     metadata, config = await repository_configuration(f"{owner}/{name}")
     return {"repository": metadata["full_name"], "default_branch": metadata["default_branch"],
-            **config.model_dump()}
+            "approved": config.enabled, "workflow_ready": config.workflow_ready, **config.model_dump()}
 
 
 @app.get("/api/repositories/{owner}/{name}/branches")
@@ -169,7 +179,7 @@ async def list_repository_branches(owner: str, name: str):
 
 @app.get("/api/repositories/{owner}/{name}/branch-check")
 async def check_repository_branch(owner: str, name: str, branch: str, base_branch: str):
-    return await github.branch_summary(f"{owner}/{name}", branch, base_branch)
+    return await github.available_branch_name(f"{owner}/{name}", branch, base_branch)
 
 
 @app.post("/api/workflows", status_code=202)
@@ -180,34 +190,30 @@ async def create_workflow(req: WorkflowRequest):
         raise HTTPException(422, detail={"message": "Selected repository conflicts with the Jira description", "repository_candidates": candidates})
     metadata, repo = await repository_configuration(req.repository)
     if not repo.enabled:
-        raise HTTPException(403, "Repository must opt in with enabled=true in .github/ai-dlc.json on its default branch")
-    if not repo.quality:
-        raise HTTPException(422, "Configure sonar_project_key, sonar_workflow and codeql_workflow in repository quality settings")
+        raise HTTPException(403, "Repository is not centrally approved for AI-DLC. Ask an orchestrator administrator to add it to config/repositories.json.")
+    if not repo.workflow_ready:
+        raise HTTPException(422, detail={
+            "message": "Repository is centrally approved but its CI quality configuration is incomplete.",
+            "setup_blockers": repo.setup_blockers or ["Configure SonarQube and CodeQL workflows in the central registry."],
+        })
     if not settings.mock_mode and (not settings.sonar_url or not settings.sonar_token):
         raise HTTPException(503, "Configure SONAR_URL and SONAR_TOKEN before starting a real workflow")
     target = select_target(repo, req.target, None if settings.mock_mode else req.stack)
     repository = metadata["full_name"]
     run_id = str(uuid.uuid4())
-    branch = req.branch_name or f"ai-dlc/{req.jira_key.lower()}-{run_id[:8]}"
-    github.validate_branch_name(branch)
+    requested_branch = req.branch_name or f"feature/{req.jira_key}"
+    github.validate_branch_name(requested_branch)
     base_branch = req.base_branch or metadata["default_branch"]
     github.validate_branch_name(base_branch)
-    if branch == base_branch:
-        raise HTTPException(422, "The working branch name must differ from its base branch")
-    branch_summary = await github.branch_summary(repository, branch, base_branch)
-    if branch_summary["exists"] and not req.reuse_existing_branch:
-        raise HTTPException(409, detail={"code": "branch_exists", "message": "This branch already exists. Review its commits and pull requests before choosing reuse.", "branch": branch_summary})
-    if branch_summary["exists"] and branch_summary.get("protected"):
-        raise HTTPException(409, detail={"code": "branch_protected", "message": "This branch is protected; choose an unprotected working branch name.", "branch": branch_summary})
-    if not branch_summary["exists"] and req.reuse_existing_branch:
-        raise HTTPException(409, detail={"code": "branch_missing", "message": "The branch no longer exists. Check its name and choose again."})
     if settings.mock_mode:
+        branch_selection = await github.available_branch_name(repository, requested_branch, base_branch)
+        branch = branch_selection["branch_name"]
         workspace = repository_workspace = settings.workspace_root
         base_sha = None
         profile = stacks.get(req.stack or target.stack or "springboot")
     else:
-        repository_workspace, branch_summary = await github.prepare_workspace(
-            repository, settings.workspace_root, run_id, branch, base_branch, req.reuse_existing_branch,
+        repository_workspace, branch, branch_selection = await github.prepare_workspace(
+            repository, settings.workspace_root, run_id, requested_branch, base_branch,
         )
         base_sha = await github.local_sha(repository_workspace)
         workspace = resolve_workspace(repository_workspace, target)
@@ -231,10 +237,6 @@ async def create_workflow(req: WorkflowRequest):
         "agent_outputs": [],
         "errors": []
     }
-    if branch_summary.get("open_pull_requests"):
-        existing_pr = branch_summary["open_pull_requests"][0]
-        initial["pr_number"] = existing_pr["number"]
-        initial["pr_url"] = existing_pr["url"]
     config = {"configurable": {"thread_id": run_id}, "recursion_limit": 100}
     item = {"state": initial, "config": config, "phase": "running", "pending_approval": None, "events": []}
     await store.put(run_id, item)
@@ -242,9 +244,11 @@ async def create_workflow(req: WorkflowRequest):
         "time": datetime.now(timezone.utc).isoformat(),
         "stage": "branch",
         "event": "completed",
-        "status": "branch_reused" if req.reuse_existing_branch else "branch_created",
+        "status": "branch_created",
+        "requested_branch": requested_branch,
         "branch": branch,
         "base_branch": base_branch,
+        "collision_count": branch_selection["collision_count"],
     })
     launch(run_id, initial)
     return response_for(run_id, item)

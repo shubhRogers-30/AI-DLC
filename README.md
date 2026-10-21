@@ -111,33 +111,22 @@ private-repository CodeQL also requires the appropriate organization entitlement
 Keep App private keys outside repositories/workspaces. Git authentication is
 injected per clone/push operation; tokens are not embedded in clone URLs.
 
-### 2. Opt the repository in
+### 2. Centrally approve repositories
 
-Submit `.github/ai-dlc.json` in a setup pull request targeting the target
-repository's default branch. You do not need direct write access to `main`; a
-repository maintainer can review and merge the opt-in pull request. The file on
-the default branch after merge must contain:
+An orchestrator administrator manages approved repositories in
+`config/repositories.json`; target repositories do not need an
+`.github/ai-dlc.json`. The registry entry defines whether the repo is approved,
+its target paths and stacks, and its quality configuration. The API shows
+approval separately from workflow readiness. A repository can be centrally
+approved while runs remain blocked until its Sonar project key and dispatchable
+Sonar/CodeQL workflows are confirmed.
 
-```json
-{
-  "version": 1,
-  "enabled": true,
-  "targets": [{"name": "default", "path": ".", "stack": "angular"}],
-  "quality": {
-    "sonar_project_key": "actual-sonar-project-key",
-    "sonar_workflow": "sonar.yml",
-    "codeql_workflow": "codeql.yml"
-  }
-}
-```
-
-Use `springboot` for a Java backend. For a monorepo, use the actual frontend and
-backend directories as separate targets; see `config/repository.example.json`.
-Omit the target's stack for automatic detection. Ambiguous/unknown stacks fail
-closed, and a request cannot override a configured target with a different stack.
-Discovery covers accessible organization repositories without a central list;
-coding still requires per-repository opt-in and write access. Default branches
-come from GitHub metadata, not the global `DEFAULT_BRANCH` setting.
+The registry includes `RogersCommunications/DOAT-Client-UI` (Angular, repo root)
+and `RogersCommunications/msst-ui` (stack auto-detection, repo root). Their CI
+readiness blockers are recorded in that file rather than guessed. Accessible
+organization repos remain discoverable, but only centrally approved repos can
+start. The backend still verifies GitHub write access. Default branches come
+from GitHub; the user chooses a base branch in the console.
 
 ### 3. Prepare tools and CI
 
@@ -231,12 +220,10 @@ action. UI visibility follows completed agent operations and 1.6-second diff
 snapshots; it does not expose Copilot's private token-by-token reasoning.
 
 Before starting, enter a new branch name and choose its base branch. The default
-name is ticket-key plus a unique suffix. If the name already exists, the console
-shows its recent commits and matching open pull requests. Explicitly confirm
-reuse to continue on it; otherwise choose another name. Reusing a branch can
-combine this Jira story with existing branch work, and an existing matching PR
-will be updated rather than duplicated. New remote branches are created when
-the workflow starts; agent code is pushed only after the pre-push approval.
+name is `feature/<JIRA-KEY>`. If that name already exists, the backend generates
+a six-digit numeric suffix and rechecks until unused. Existing branches and PRs
+are never reused. The new remote branch is created when the workflow starts;
+agent code is pushed only after the pre-push approval.
 
 ### Extending stacks
 

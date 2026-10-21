@@ -37,15 +37,16 @@ export class AppComponent implements OnInit, OnDestroy {
   targets: any[] = [];
   selectedTarget = '';
   targetError = '';
-  targetNeedsOptIn = false;
+  repositoryNotApproved = false;
+  workflowReady = false;
+  setupBlockers: string[] = [];
   checkingTarget = false;
   repositoryDefaultBranch = '';
   branches: any[] = [];
   branchName = '';
   baseBranch = '';
-  branchConflict: any = null;
+  branchCollisionNotice = '';
   checkingBranch = false;
-  reuseExistingBranch = false;
   branchError = '';
   ticketFilter = '';
   ticketLoading = false;
@@ -79,6 +80,12 @@ export class AppComponent implements OnInit, OnDestroy {
   get repositoryOptions(): string[] {
     const candidates = this.selectedTicket?.repository_candidates || [];
     return candidates.length ? candidates : this.repositories.map(repository => repository.full_name);
+  }
+
+  repositoryStatus(name: string): string {
+    const repository = this.repositories.find(item => item.full_name === name);
+    if (!repository?.ai_dlc_approved) return 'not approved';
+    return repository.workflow_ready ? 'ready' : 'CI setup needed';
   }
 
   get selectedProfile(): string { return this.targets.find(target => target.name === this.selectedTarget)?.stack || ''; }
@@ -140,21 +147,21 @@ export class AppComponent implements OnInit, OnDestroy {
     this.targets = [];
     this.selectedTarget = '';
     this.targetError = '';
-    this.targetNeedsOptIn = false;
+    this.repositoryNotApproved = false;
+    this.workflowReady = false;
+    this.setupBlockers = [];
     this.repositoryDefaultBranch = '';
     this.branches = [];
     this.baseBranch = '';
-    this.branchConflict = null;
-    this.reuseExistingBranch = false;
+    this.branchCollisionNotice = '';
     this.branchError = '';
-    this.branchName = ticket ? `ai-dlc/${ticket.key.toLowerCase()}-${crypto.randomUUID().slice(0, 8)}` : '';
+    this.branchName = ticket ? `feature/${ticket.key}` : '';
     this.requestError = '';
     if (this.selectedRepository) this.loadRepository();
   }
 
   loadRepository(): void {
-    this.branchConflict = null;
-    this.reuseExistingBranch = false;
+    this.branchCollisionNotice = '';
     this.branchError = '';
     void this.loadTargets();
     void this.loadBranches();
@@ -163,7 +170,9 @@ export class AppComponent implements OnInit, OnDestroy {
   async loadTargets(): Promise<void> {
     if (!this.selectedRepository) return;
     this.targetError = '';
-    this.targetNeedsOptIn = false;
+    this.repositoryNotApproved = false;
+    this.workflowReady = false;
+    this.setupBlockers = [];
     this.targets = [];
     this.selectedTarget = '';
     const [owner, name] = this.selectedRepository.split('/');
@@ -172,8 +181,10 @@ export class AppComponent implements OnInit, OnDestroy {
     try {
       const result = await firstValueFrom(this.http.get<any>(this.url(`/api/repositories/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/targets`), { headers: this.headers() }));
       this.repositoryDefaultBranch = result.default_branch || '';
-      if (!result.enabled) { this.targetNeedsOptIn = true; return; }
+      if (!result.approved) { this.repositoryNotApproved = true; this.setupBlockers = result.setup_blockers || []; return; }
       this.targets = result.targets || [];
+      this.workflowReady = result.workflow_ready === true;
+      this.setupBlockers = result.setup_blockers || [];
       if (this.targets.length === 1) this.selectedTarget = this.targets[0].name;
     } catch (error) { this.targetError = this.errorMessage(error); }
     finally { this.checkingTarget = false; }
@@ -187,68 +198,66 @@ export class AppComponent implements OnInit, OnDestroy {
       const result = await firstValueFrom(this.http.get<any>(this.url(`/api/repositories/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/branches`), { headers: this.headers() }));
       this.branches = result.branches || [];
       this.baseBranch = result.default_branch || this.branches[0]?.name || '';
-      this.branchConflict = null;
-      this.reuseExistingBranch = false;
       await this.checkBranch();
     } catch (error) { this.branchError = this.errorMessage(error); }
   }
 
   async checkBranch(): Promise<void> {
-    this.branchConflict = null;
-    this.reuseExistingBranch = false;
     this.branchError = '';
     if (!this.selectedRepository || !this.branchName.trim() || !this.baseBranch) return;
-    if (this.branchName.trim() === this.baseBranch) {
-      this.branchError = 'Choose a new working branch name different from its base branch.';
-      return;
-    }
     const [owner, name] = this.selectedRepository.split('/');
     if (!owner || !name) return;
     this.checkingBranch = true;
     try {
-      const result = await firstValueFrom(this.http.get<any>(this.url(`/api/repositories/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/branch-check`), {
-        headers: this.headers(), params: new HttpParams().set('branch', this.branchName.trim()).set('base_branch', this.baseBranch),
-      }));
-      if (result.exists) {
-        this.branchConflict = result;
-        if (result.protected) this.branchError = 'This existing branch is protected. Choose an unprotected working branch name.';
+      const requested = this.branchName.trim();
+      let candidate = requested;
+      let collisionCount = 0;
+      for (let attempt = 0; attempt < 10; attempt++) {
+        const result = await firstValueFrom(this.http.get<any>(this.url(`/api/repositories/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/branch-check`), {
+          headers: this.headers(), params: new HttpParams().set('branch', candidate).set('base_branch', this.baseBranch),
+        }));
+        if (result.branch_name === candidate) {
+          this.branchName = candidate;
+          if (collisionCount) this.branchCollisionNotice = `${requested} already exists; selected ${candidate}.`;
+          return;
+        }
+        if (!result.branch_name || result.branch_name === candidate) break;
+        candidate = result.branch_name;
+        collisionCount++;
       }
+      this.branchError = 'Could not find an unused branch name. Enter another name and try again.';
     } catch (error) { this.branchError = this.errorMessage(error); }
     finally { this.checkingBranch = false; }
   }
 
   changeBranchName(value: string): void {
     this.branchName = value;
-    this.branchConflict = null;
-    this.reuseExistingBranch = false;
+    this.branchCollisionNotice = '';
     this.branchError = '';
   }
 
-  chooseExistingBranch(): void { this.reuseExistingBranch = true; this.branchError = ''; }
-
   chooseDifferentBranch(): void {
     this.branchName = '';
-    this.branchConflict = null;
-    this.reuseExistingBranch = false;
+    this.branchCollisionNotice = '';
     this.branchError = '';
   }
 
   changeBaseBranch(value: string): void {
     this.baseBranch = value;
-    this.branchConflict = null;
-    this.reuseExistingBranch = false;
+    this.branchCollisionNotice = '';
     void this.checkBranch();
   }
 
   async startWorkflow(): Promise<void> {
-    if (!this.selectedTicket || !this.selectedRepository || !this.selectedTarget || !this.branchName.trim() || !this.baseBranch || this.branchConflict && !this.reuseExistingBranch || this.startLoading) return;
+    if (!this.selectedTicket || !this.selectedRepository || !this.selectedTarget || !this.workflowReady || !this.branchName.trim() || !this.baseBranch || this.startLoading) return;
     this.startLoading = true;
     this.requestError = '';
     try {
       const body = { jira_key: this.selectedTicket.key, repository: this.selectedRepository, target: this.selectedTarget,
-        branch_name: this.branchName.trim(), base_branch: this.baseBranch, reuse_existing_branch: this.reuseExistingBranch,
+        branch_name: this.branchName.trim(), base_branch: this.baseBranch,
         ...(this.selectedProfile ? { stack: this.selectedProfile } : {}) };
       this.run = await firstValueFrom(this.http.post<any>(this.url('/api/workflows'), body, { headers: this.headers() }));
+      this.branchName = this.run.state.branch;
       this.events = [];
       this.diff = { files: [], diff: '', updated_at: '' };
       this.selectedDiffFile = '';
@@ -258,7 +267,7 @@ export class AppComponent implements OnInit, OnDestroy {
     } catch (error: any) {
       if (error?.status === 409 && this.selectedRepository) {
         await this.checkBranch();
-        if (this.branchConflict) { this.requestError = ''; return; }
+        if (this.branchCollisionNotice) { this.requestError = ''; return; }
       }
       this.requestError = this.errorMessage(error);
     }
