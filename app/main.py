@@ -20,7 +20,7 @@ from app.execution import run_command
 from pathlib import Path
 import asyncio
 from datetime import datetime, timezone
-from app.repositories import RepositoryConfig, Target, select_target, resolve_workspace, repository_registry
+from app.repositories import QualityConfig, RepositoryConfig, Target, select_target, resolve_workspace, repository_registry
 from app.stacks import stacks
 from app.jira_tickets import repository_candidates
 
@@ -138,11 +138,23 @@ async def list_stacks():
 async def list_repositories():
     repositories = await github.list_repositories()
     for repository in repositories:
-        config = repository_registry.get(repository["full_name"])
-        repository.update({"ai_dlc_approved": repository_registry.is_approved(repository["full_name"]),
+        config = configured_repository(repository["full_name"])
+        repository.update({"ai_dlc_approved": config.enabled,
                            "workflow_ready": config.workflow_ready,
                            "setup_blockers": config.setup_blockers})
     return {"organization": settings.github_organization, "repositories": repositories}
+
+
+def configured_repository(repository):
+    config = repository_registry.get(repository)
+    if settings.repository_registry_required:
+        return config
+    quality = config.quality or QualityConfig(
+        sonar_project_key=settings.sonar_project_key or repository.replace("/", "_"),
+        sonar_workflow=settings.sonar_workflow_file,
+        codeql_workflow=settings.codeql_workflow_file,
+    )
+    return config.model_copy(update={"enabled": True, "quality": quality, "setup_blockers": []})
 
 
 async def repository_configuration(repo):
@@ -153,11 +165,11 @@ async def repository_configuration(repo):
             profile = "angular" if repo.lower().endswith("ui") else "springboot"
             config = RepositoryConfig(enabled=True, targets=[Target(name="default", stack=profile)])
         config = config.model_copy(update={
-            "quality": {"sonar_project_key": "mock", "sonar_workflow": "sonar.yml", "codeql_workflow": "codeql.yml"},
+            "quality": QualityConfig(sonar_project_key="mock", sonar_workflow="sonar.yml", codeql_workflow="codeql.yml"),
             "setup_blockers": [],
         })
     else:
-        config = repository_registry.get(metadata["full_name"])
+        config = configured_repository(metadata["full_name"])
     return metadata, config
 
 

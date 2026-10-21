@@ -36,3 +36,9 @@ def test_central_registry_approves_requested_repositories_and_reports_quality_ga
     assert doat.quality is None and doat.setup_blockers
     assert msst.quality is None and msst.setup_blockers
     assert not registry.is_approved("RogersCommunications/unregistered")
+
+
+def test_missing_registry_is_empty(tmp_path):
+    registry = RepositoryRegistry(tmp_path / "repositories.json")
+    assert not registry.is_approved("RogersCommunications/rcom-store")
+    assert not registry.get("RogersCommunications/rcom-store").enabled

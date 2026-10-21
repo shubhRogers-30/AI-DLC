@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     github_app_id: str = ""
     github_installation_id: str = ""
     github_private_key_path: str = ""
+    repository_registry_required: bool = False
     api_token: str = ""
     command_timeout_seconds: int = 1800
     agent_timeout_seconds: int = 1800
@@ -31,6 +32,8 @@ class Settings(BaseSettings):
 
     sonar_url: str = ""
     sonar_token: str = ""
+    sonar_project_key: str = ""
+    sonar_workflow_file: str = "sonar.yml"
     codeql_workflow_file: str = "codeql.yml"
     codeql_ref: str = "main"
     max_remediation_attempts: int = 2

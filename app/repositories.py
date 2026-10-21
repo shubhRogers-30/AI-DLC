@@ -79,8 +79,8 @@ def resolve_workspace(root, target):
 class RepositoryRegistry:
     def __init__(self, path=None):
         self.path = Path(path) if path else Path(__file__).resolve().parents[1] / "config" / "repositories.json"
-        data = json.loads(self.path.read_text(encoding="utf-8"))
-        self.organization = data["organization"]
+        data = json.loads(self.path.read_text(encoding="utf-8")) if self.path.exists() else {}
+        self.organization = data.get("organization", "")
         self.repositories = {
             name.casefold(): RepositoryConfig.model_validate(config)
             for name, config in data.get("repositories", {}).items()
