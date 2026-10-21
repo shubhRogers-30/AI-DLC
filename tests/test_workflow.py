@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from langgraph.types import Command
 
+from app.agents.copilot_service import CopilotExecutionError
 from app.integrations.github_client import GitHubClient
 from app.integrations.jira_client import JiraClient
 from app.integrations.sonarqube_client import SonarClient
@@ -59,6 +60,24 @@ def test_architecture_rejection_does_not_code():
         result = await graph.ainvoke(Command(resume={"approved": False}), config)
         assert result["status"] == "rejected"
         assert copilot.run_agent.await_count == 1
+    asyncio.run(scenario())
+
+
+def test_live_developer_agent_must_change_repository_files():
+    async def scenario():
+        graph, github, copilot = make_graph(mock=False)
+        copilot.mock = False
+        copilot.run_agent = AsyncMock(return_value={"agent": "angular-developer", "summary": "Done", "changes": []})
+        github._git = AsyncMock(return_value="")
+        config = {"configurable": {"thread_id": "no-code-changes"}}
+        await graph.ainvoke(initial("angular"), config)
+        resumed = graph.ainvoke(Command(resume={"approved": True}), config)
+        with pytest.raises(CopilotExecutionError, match="without changing repository files"):
+            await resumed
+        github._git.assert_awaited_once_with(
+            ["status", "--porcelain", "--untracked-files=all"], ".",
+        )
+
     asyncio.run(scenario())
 
 

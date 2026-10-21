@@ -14,6 +14,7 @@ from app.clients.jira import JiraClient, JiraError
 from app.clients.github import GitHubClient
 from app.clients.sonar import SonarClient
 from app.copilot_service import CopilotService
+from app.agents.copilot_service import CopilotExecutionError
 from app.graph import build_graph
 from app.integrations.github_client import GitHubError
 from app.execution import run_command
@@ -101,8 +102,8 @@ async def execute(run_id, payload):
         await store.add_event(run_id, {"time": datetime.now(timezone.utc).isoformat(), "event": phase,
                           "approval_type": pending.get("type") if pending else None})
     except Exception as error:
-        message = str(error) if isinstance(error, (GitHubError, JiraError)) else f"{type(error).__name__}: execution failed; check runtime authentication, build tools and CI configuration"
-        logger.error("Workflow %s failed (%s)", run_id, type(error).__name__)
+        message = str(error) if isinstance(error, (GitHubError, JiraError, CopilotExecutionError)) else f"{type(error).__name__}: execution failed; check runtime authentication, build tools and CI configuration"
+        logger.exception("Workflow %s failed (%s)", run_id, type(error).__name__)
         state = {**state, "status": "failed", "errors": state.get("errors", []) + [message]}
         await store.update(run_id, state=state, config=config, phase="failed", pending_approval=None)
         await store.add_event(run_id, {"time": datetime.now(timezone.utc).isoformat(), "event": "failed", "error": message})

@@ -5,7 +5,7 @@
   </header>
 
   <main class="page">
-    <section class="page-heading"><div><p class="eyebrow">ROGERS COMMUNICATIONS <span>/</span> DELIVERY CONSOLE</p><h1>From ticket to pull request.</h1><p class="subtitle">Review every decision, code change, and quality gate along the way.</p></div><div class="heading-meta"><span class="live-dot"></span>Human-reviewed delivery</div></section>
+    <section class="page-heading"><div><p class="eyebrow">{{ organization | uppercase }} <span>/</span> DELIVERY CONSOLE</p><h1>From ticket to pull request.</h1><p class="subtitle">Review every decision, code change, and quality gate along the way.</p></div><div class="heading-meta"><span class="live-dot"></span>Human-reviewed delivery</div></section>
 
     <section class="connect-strip" *ngIf="!connected"><div class="connect-copy"><strong>Connect to your local orchestrator</strong><span>The API token stays in this browser session and is sent only to the configured backend.</span></div><label class="url-field"><span>API URL</span><input [(ngModel)]="apiUrl" placeholder="http://127.0.0.1:8000" autocomplete="url"></label><label class="token-field"><span>API bearer token</span><input [(ngModel)]="apiToken" type="password" placeholder="Paste your local API_TOKEN" autocomplete="off" (keyup.enter)="connect()"></label><button class="button button-dark" [disabled]="connecting" (click)="connect()">{{ connecting ? 'Connecting…' : 'Connect' }} <span>→</span></button></section>
     <div class="alert" *ngIf="connectionError || requestError"><strong>Couldn’t continue</strong><span>{{ connectionError || requestError }}</span></div>
@@ -22,7 +22,7 @@
       <section class="detail-pane" *ngIf="!run && selectedTicket; else runPanel">
         <div class="detail-heading"><div class="ticket-breadcrumb"><span>JIRA ISSUE</span><span>/</span><strong>{{ selectedTicket.key }}</strong></div><span class="issue-status">{{ selectedTicket.status }}</span></div>
         <h2 class="issue-title">{{ selectedTicket.summary }}</h2><p class="issue-description">{{ selectedTicket.description || 'No description provided.' }}</p>
-        <div class="repo-selection"><div class="section-heading"><div><p class="eyebrow">WORKING TARGET</p><h3>Choose a repository</h3></div><span class="org-tag">RogersCommunications</span></div>
+        <div class="repo-selection"><div class="section-heading"><div><p class="eyebrow">WORKING TARGET</p><h3>Choose a repository</h3></div><span class="org-tag">{{ organization }}</span></div>
           <p class="selection-note" *ngIf="selectedTicket.repository_candidates.length > 1">Multiple repositories were found in the description. Choose the one this story should change before starting.</p>
           <p class="selection-note" *ngIf="selectedTicket.repository_candidates.length === 0">No repository reference was found. Choose the intended repository from your accessible organization repositories.</p>
           <p class="selection-note" *ngIf="selectedTicket.repository_candidates.length === 1">One repository reference was found in the ticket description.</p>

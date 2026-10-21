@@ -21,6 +21,20 @@ def test_real_process_exit_codes_and_timeout(tmp_path):
     asyncio.run(scenario())
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows selector loop regression")
+def test_command_runs_with_windows_selector_loop(tmp_path):
+    async def scenario():
+        result = await run_command([sys.executable, "-c", "print('selector loop works')"], tmp_path)
+        assert result["passed"]
+        assert "selector loop works" in result["output"]
+
+    loop = asyncio.SelectorEventLoop()
+    try:
+        loop.run_until_complete(scenario())
+    finally:
+        loop.close()
+
+
 def test_local_git_publication(tmp_path, monkeypatch):
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")

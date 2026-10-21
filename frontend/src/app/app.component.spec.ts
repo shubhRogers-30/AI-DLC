@@ -40,6 +40,14 @@ describe('AppComponent', () => {
     expect(app.selectedRepository).toBe('');
   });
 
+  it('marks a started stage failed when its workflow has failed', () => {
+    const fixture = TestBed.createComponent(AppComponent);
+    const app = fixture.componentInstance;
+    app.run = { phase: 'failed', state: { status: 'failed' } };
+    app.events = [{ id: 3, stage: 'develop', event: 'started' }];
+    expect(app.stageStatus('develop')).toBe('failed');
+  });
+
   it('renders the workflow console', () => {
     const fixture = TestBed.createComponent(AppComponent);
     fixture.detectChanges();

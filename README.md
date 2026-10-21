@@ -162,6 +162,9 @@ Default branches come from GitHub; the user chooses a base branch in the console
 Do not use `--reload`, multiple workers, or restart between approvals: graph
 checkpoints, run state and background tasks are currently in memory. Environment
 variables override `.env`; remove stale `MOCK_MODE=true` terminal overrides.
+The default `make run` target also starts without reload. For idle local
+development only, `make dev-reload` watches `app/` and excludes cloned
+workspaces; do not use it while a workflow is running.
 
 ### 5. Import and run the Postman requests individually
 

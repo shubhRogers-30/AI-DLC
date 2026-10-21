@@ -6,6 +6,11 @@ from copilot.session import PermissionHandler
 from copilot.generated.rpc import PermissionDecisionReject
 from app.registry import AgentRegistry
 
+
+class CopilotExecutionError(RuntimeError):
+    pass
+
+
 class CopilotService:
     def __init__(self, model="auto", mock=False, timeout=1800):
         self.model, self.mock = model, mock
@@ -35,18 +40,28 @@ class CopilotService:
 
         env = {key: value for key, value in os.environ.items()
                if not key.upper().startswith(("GITHUB_", "GH_TOKEN", "JIRA_", "SONAR_", "API_TOKEN", "GIT_CONFIG_"))}
-        async with CopilotClient(working_directory=str(Path(workspace).resolve()), env=env, use_logged_in_user=True) as client:
-            session = await client.create_session(
-                model=self.model,
-                working_directory=str(Path(workspace).resolve()),
-                on_permission_request=permissions,
-                system_message={"content": system_message},
-                session_id=f"ai-dlc-{agent_name}-{uuid.uuid4()}",
-                enable_config_discovery=False,
-                enable_file_hooks=False,
-            )
-            response = await session.send_and_wait(prompt, timeout=self.timeout)
-            content = getattr(getattr(response, "data", None), "content", None)
-            if not content:
-                raise RuntimeError("Copilot returned no response; inspect CLI authentication and model access")
-            return {"agent": agent_name, "summary": content, "changes": []}
+        try:
+            async with CopilotClient(working_directory=str(Path(workspace).resolve()), env=env, use_logged_in_user=True) as client:
+                session = await client.create_session(
+                    model=self.model,
+                    working_directory=str(Path(workspace).resolve()),
+                    on_permission_request=permissions,
+                    system_message={"content": system_message},
+                    session_id=f"ai-dlc-{agent_name}-{uuid.uuid4()}",
+                    enable_config_discovery=False,
+                    enable_file_hooks=False,
+                )
+                response = await session.send_and_wait(prompt, timeout=self.timeout)
+                content = getattr(getattr(response, "data", None), "content", None)
+                if not content:
+                    raise CopilotExecutionError(
+                        "Copilot returned no response. Verify CLI authentication and model access."
+                    )
+                return {"agent": agent_name, "summary": content, "changes": []}
+        except CopilotExecutionError:
+            raise
+        except Exception as error:
+            raise CopilotExecutionError(
+                f"Copilot agent {agent_name} failed ({type(error).__name__}). Verify CLI authentication, "
+                "model availability, network access, and agent permissions."
+            ) from error

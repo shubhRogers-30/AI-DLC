@@ -279,13 +279,31 @@ class GitHubClient:
         env = os.environ.copy()
         env["GIT_TERMINAL_PROMPT"] = "0"
         env["GCM_INTERACTIVE"] = "never"
+        git_config = [("core.longpaths", "true")] if os.name == "nt" else []
+        access_token = None
         if authenticated:
-            encoded = base64.b64encode(f"x-access-token:{await self.access_token()}".encode()).decode()
-            env.update({"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "http.https://github.com/.extraheader",
-                        "GIT_CONFIG_VALUE_0": f"Authorization: Basic {encoded}"})
+            access_token = await self.access_token()
+            encoded = base64.b64encode(f"x-access-token:{access_token}".encode()).decode()
+            git_config.append(("http.https://github.com/.extraheader", f"Authorization: Basic {encoded}"))
+        if git_config:
+            env["GIT_CONFIG_COUNT"] = str(len(git_config))
+            for index, (key, value) in enumerate(git_config):
+                env[f"GIT_CONFIG_KEY_{index}"] = key
+                env[f"GIT_CONFIG_VALUE_{index}"] = value
         result = await run_command(["git", *command], workspace, env=env)
         if not result["passed"]:
-            raise GitHubError("Git operation failed; check credentials, repository state and Git installation")
+            operation = command[0] if command else "command"
+            output = result.get("output", "").strip()
+            if access_token:
+                output = output.replace(access_token, "[redacted]")
+                encoded = base64.b64encode(f"x-access-token:{access_token}".encode()).decode()
+                output = output.replace(encoded, "[redacted]")
+            output = re.sub(r"(?i)(authorization:\s*(?:basic|bearer)\s+)\S+", r"\1[redacted]", output)
+            output = re.sub(r"https?://[^/@\s]{1,256}:[^/@\s]{1,256}@", "https://[redacted]@", output)
+            details = f": {output[:1200]}" if output else ". Check Git installation and repository access"
+            exit_code = result.get("exit_code")
+            code = f" (exit code {exit_code})" if exit_code is not None else ""
+            raise GitHubError(f"Git {operation} failed{code}{details}")
         return result["output"].strip()
 
     async def prepare_workspace(self, repo, workspace_root, run_id, requested_branch, base):

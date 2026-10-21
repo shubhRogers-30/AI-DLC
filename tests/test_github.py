@@ -1,4 +1,5 @@
 import asyncio
+import os
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -52,6 +53,36 @@ def test_workspace_chooses_numeric_suffix_and_creates_branch_before_clone(tmp_pa
         client.create_branch.assert_awaited_once_with("RogersCommunications/demo", branch, "main")
         assert Path(workspace).name == "demo"
         assert client._git.call_args_list[0].args[0][1:4] == ["--branch", branch, "--single-branch"]
+    asyncio.run(scenario())
+
+
+def test_git_failure_includes_sanitized_diagnostics(tmp_path):
+    async def scenario():
+        client = GitHubClient("secret-token", "https://api.github.com")
+        with patch("app.integrations.github_client.run_command", new=AsyncMock(return_value={
+            "passed": False,
+            "exit_code": 128,
+            "output": "fatal: Authentication failed for https://user:password@github.com/repo; token=secret-token",
+        })) as run_command:
+            with pytest.raises(GitHubError) as error:
+                await client._git(["clone", "https://github.com/repo"], tmp_path, authenticated=True)
+
+        message = str(error.value)
+        env = run_command.await_args.kwargs["env"]
+        expected_config_count = 2 if os.name == "nt" else 1
+        assert env["GIT_CONFIG_COUNT"] == str(expected_config_count)
+        if os.name == "nt":
+            assert env["GIT_CONFIG_KEY_0"] == "core.longpaths"
+            assert env["GIT_CONFIG_VALUE_0"] == "true"
+            assert env["GIT_CONFIG_KEY_1"] == "http.https://github.com/.extraheader"
+        else:
+            assert env["GIT_CONFIG_KEY_0"] == "http.https://github.com/.extraheader"
+        assert "Git clone failed (exit code 128)" in message
+        assert "Authentication failed" in message
+        assert "[redacted]" in message
+        assert "secret-token" not in message
+        assert "user:password" not in message
+
     asyncio.run(scenario())
 
 

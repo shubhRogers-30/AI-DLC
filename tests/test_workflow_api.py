@@ -193,6 +193,8 @@ def test_worker_failure_is_saved(monkeypatch):
         result = client.get(f"/api/workflows/{run_id}").json()
         assert result["phase"] == "failed"
         assert "private secret" not in str(result)
+        events = client.get(f"/api/workflows/{run_id}/events").json()["events"]
+        assert any(event.get("stage") == "architecture" and event.get("event") == "failed" for event in events)
 
 
 def test_actual_background_scheduling(monkeypatch):

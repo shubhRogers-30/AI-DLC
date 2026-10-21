@@ -1,5 +1,6 @@
 import os
 import inspect
+from app.agents.copilot_service import CopilotExecutionError
 from langgraph.config import get_stream_writer
 from langgraph.graph import StateGraph, START, END
 from langgraph.types import interrupt
@@ -80,6 +81,7 @@ Tasks:
 
 Rules:
 - Inspect the existing repository before editing.
+- Make the requested code changes directly in the working tree; do not return only a plan.
 - Reuse existing patterns and dependencies.
 - Do not change unrelated code.
 - Follow the selected stack guidance and approved architecture.
@@ -88,6 +90,17 @@ Rules:
 - Report changed files and test results.
 """
         result = await copilot.run_agent(f"{profile.name}-developer", prompt, state["workspace"], guidance=profile.guidance)
+        if not settings.mock_mode and not getattr(copilot, "mock", False):
+            changed = await github._git(
+                ["status", "--porcelain", "--untracked-files=all"], state["repository_workspace"],
+            )
+            changed_files = [line[3:] for line in changed.splitlines() if len(line) > 3]
+            if not changed_files:
+                raise CopilotExecutionError(
+                    "Copilot completed the developer task without changing repository files. "
+                    "Check that the selected story requires code changes and that Copilot can edit the target workspace."
+                )
+            result["changes"] = changed_files
         return {"agent_outputs": state.get("agent_outputs", []) + [result], "status": "developed"}
 
     async def tests(state):
@@ -215,9 +228,14 @@ Run tests after fixing. Do not commit, push, change branches, merge or deploy.
     async def tracked(name, fn, state):
         writer = get_stream_writer()
         writer({"stage": name, "event": "started"})
-        result = fn(state)
-        if inspect.isawaitable(result):
-            result = await result
+        try:
+            result = fn(state)
+            if inspect.isawaitable(result):
+                result = await result
+        except Exception as error:
+            writer({"stage": name, "event": "failed", "status": "failed",
+                    "error_type": type(error).__name__})
+            raise
         writer({"stage": name, "event": "completed", "status": result.get("status")})
         return result
 

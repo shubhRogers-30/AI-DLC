@@ -28,6 +28,7 @@ export class AppComponent implements OnInit, OnDestroy {
   apiUrl = sessionStorage.getItem('ai-dlc-api-url') || window.location.origin;
   apiToken = sessionStorage.getItem('ai-dlc-api-token') || '';
   connected = false;
+  organization = 'Organization';
   connecting = false;
   connectionError = '';
   tickets: any[] = [];
@@ -119,6 +120,7 @@ export class AppComponent implements OnInit, OnDestroy {
         this.loadTickets(),
         firstValueFrom(this.http.get<any>(this.url('/api/repositories'), { headers: this.headers() }))
       ]);
+      this.organization = repositories.organization || this.organization;
       this.repositories = repositories.repositories || [];
       if (issueKey) this.selectTicket(this.tickets.find(ticket => ticket.key.toLowerCase() === issueKey.toLowerCase()) || null);
     } catch (error) { this.connected = false; this.connectionError = this.errorMessage(error); }
@@ -315,6 +317,9 @@ export class AppComponent implements OnInit, OnDestroy {
     const records = this.events.filter((event: any) => event.stage === stageId);
     const started = [...records].reverse().find((event: any) => event.event === 'started');
     const completed = [...records].reverse().find((event: any) => event.event === 'completed');
+    const failed = [...records].reverse().find((event: any) => event.event === 'failed');
+    if (failed && (!completed || failed.id > completed.id)) return 'failed';
+    if (this.run.phase === 'failed' && started && (!completed || started.id > completed.id)) return 'failed';
     if (started && (!completed || started.id > completed.id)) return 'running';
     if (completed) return ['failed', 'tests_failed', 'quality_failed'].includes(completed.status) ? 'failed' : 'complete';
     if (this.run.phase === 'failed' && stageId === 'quality' && this.run.state.quality_result?.passed === false) return 'failed';
