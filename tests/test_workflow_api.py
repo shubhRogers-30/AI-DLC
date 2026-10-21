@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-from app.main import app, execute, settings, store
+from app.main import app, configured_repository, execute, settings, store
 from app.schemas.models import Approval, WorkflowRequest
 from app.configure_postman import export_environment
 
@@ -63,6 +63,7 @@ def test_outside_org_and_discovery(monkeypatch):
 
 def test_central_registry_approves_apps_but_reports_ci_blockers(monkeypatch):
     monkeypatch.setattr(settings, "mock_mode", False)
+    monkeypatch.setattr(settings, "repository_registry_required", True)
     monkeypatch.setattr(settings, "api_token", "registry-test-token")
     headers = {"Authorization": "Bearer registry-test-token"}
     with TestClient(app) as client:
@@ -81,6 +82,64 @@ def test_central_registry_approves_apps_but_reports_ci_blockers(monkeypatch):
         })
         assert response.status_code == 422
         assert response.json()["detail"]["setup_blockers"]
+
+
+@pytest.mark.parametrize("registry_required", [False, True])
+def test_unregistered_repository_workflow_policy(monkeypatch, tmp_path, registry_required):
+    monkeypatch.setattr(settings, "mock_mode", False)
+    monkeypatch.setattr(settings, "repository_registry_required", registry_required)
+    monkeypatch.setattr(settings, "sonar_url", "http://sonar.test")
+    monkeypatch.setattr(settings, "sonar_token", "test-sonar-token")
+    monkeypatch.setattr(settings, "sonar_project_key", "")
+    monkeypatch.setattr(settings, "sonar_workflow_file", "sonar.yml")
+    monkeypatch.setattr(settings, "codeql_workflow_file", "codeql.yml")
+    monkeypatch.setattr(settings, "api_token", "test-api-token")
+    headers = {"Authorization": "Bearer test-api-token"}
+    repository = "RogersCommunications/rcom-store"
+    metadata = {"full_name": repository, "default_branch": "main"}
+    branch = "feature/TEST-123"
+    selection = {"collision_count": 0}
+    with TestClient(app) as client, \
+            patch("app.main.github.repository", new=AsyncMock(return_value=metadata)), \
+            patch("app.main.github.list_repositories", new=AsyncMock(return_value=[metadata.copy()])), \
+            patch("app.main.github.prepare_workspace", new=AsyncMock(return_value=(str(tmp_path), branch, selection))) as prepare, \
+            patch("app.main.github.local_sha", new=AsyncMock(return_value="base-sha")), \
+            patch("app.stacks.StackProfile.checks"), \
+            patch("app.main.launch") as launch:
+        targets = client.get(f"/api/repositories/{repository}/targets", headers=headers).json()
+        assert targets["approved"] is (not registry_required)
+        assert targets["workflow_ready"] is (not registry_required)
+        listed = client.get("/api/repositories", headers=headers).json()["repositories"][0]
+        assert listed["ai_dlc_approved"] is (not registry_required)
+        response = client.post("/api/workflows", headers=headers, json={
+            "jira_key": "TEST-123", "repository": repository, "stack": "angular",
+        })
+        assert response.status_code == (403 if registry_required else 202)
+        if registry_required:
+            prepare.assert_not_awaited()
+            launch.assert_not_called()
+        else:
+            assert launch.call_args.args[1]["repo_config"]["quality"] == {
+                "sonar_project_key": "RogersCommunications_rcom-store",
+                "sonar_workflow": "sonar.yml", "codeql_workflow": "codeql.yml",
+            }
+
+
+@pytest.mark.parametrize("repository", ["RogersCommunications/rcom-store", "RogersCommunications/DOAT-Client-UI"])
+def test_optional_registry_uses_configurable_quality_defaults(monkeypatch, repository):
+    monkeypatch.setattr(settings, "repository_registry_required", False)
+    monkeypatch.setattr(settings, "sonar_project_key", "actual-sonar-key")
+    monkeypatch.setattr(settings, "sonar_workflow_file", "scan.yaml")
+    monkeypatch.setattr(settings, "codeql_workflow_file", "security.yaml")
+    config = configured_repository(repository)
+    assert config.workflow_ready
+    assert not config.setup_blockers
+    assert config.quality.model_dump() == {
+        "sonar_project_key": "actual-sonar-key", "sonar_workflow": "scan.yaml",
+        "codeql_workflow": "security.yaml",
+    }
+    if repository.endswith("DOAT-Client-UI"):
+        assert config.targets[0].stack == "angular"
 
 
 def test_assigned_issues_endpoint_uses_backend_jira_identity(monkeypatch):

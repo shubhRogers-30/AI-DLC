@@ -111,22 +111,27 @@ private-repository CodeQL also requires the appropriate organization entitlement
 Keep App private keys outside repositories/workspaces. Git authentication is
 injected per clone/push operation; tokens are not embedded in clone URLs.
 
-### 2. Centrally approve repositories
+### 2. Configure repository access
 
-An orchestrator administrator manages approved repositories in
-`config/repositories.json`; target repositories do not need an
-`.github/ai-dlc.json`. The registry entry defines whether the repo is approved,
-its target paths and stacks, and its quality configuration. The API shows
-approval separately from workflow readiness. A repository can be centrally
-approved while runs remain blocked until its Sonar project key and dispatchable
-Sonar/CodeQL workflows are confirmed.
+Central registration is optional. With `REPOSITORY_REGISTRY_REQUIRED=false`
+(the default), accessible repositories in `GITHUB_ORGANIZATION` can start
+without an entry in `config/repositories.json`. Nothing needs to be copied or
+injected into target repositories. The registry file itself may also be absent.
+The backend still verifies organization membership and GitHub write access.
 
-The registry includes `RogersCommunications/DOAT-Client-UI` (Angular, repo root)
-and `RogersCommunications/msst-ui` (stack auto-detection, repo root). Their CI
-readiness blockers are recorded in that file rather than guessed. Accessible
-organization repos remain discoverable, but only centrally approved repos can
-start. The backend still verifies GitHub write access. Default branches come
-from GitHub; the user chooses a base branch in the console.
+Unregistered repositories use the repository root and the selected stack, or
+stack auto-detection when none is selected. Quality defaults are
+`SONAR_WORKFLOW_FILE=sonar.yml`, `CODEQL_WORKFLOW_FILE=codeql.yml`, and
+`SONAR_PROJECT_KEY` if set; otherwise the project key is `owner_repository`
+(for example, `RogersCommunications_rcom-store`). Set these in the orchestrator's
+environment to match your CI. Startup does not verify that these workflows or
+the Sonar project exist; quality checks still run and fail if they are missing.
+
+Existing registry entries remain optional overrides for target paths, stacks,
+and quality configuration. Their `enabled` flag and `setup_blockers` are enforced
+only when `REPOSITORY_REGISTRY_REQUIRED=true`. That setting restores central
+approval and requires each repository's quality configuration to be complete.
+Default branches come from GitHub; the user chooses a base branch in the console.
 
 ### 3. Prepare tools and CI
 
